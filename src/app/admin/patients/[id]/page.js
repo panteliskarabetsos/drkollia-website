@@ -220,6 +220,7 @@ useEffect(() => {
               className="mt-2 w-full px-4 py-2 bg-[#fdfdfc] border border-gray-200 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-[#8c7c68]"
               placeholder="Εισάγετε τιμή..."
             />
+            //
           )}
         </div>
         {[
