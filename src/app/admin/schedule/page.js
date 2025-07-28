@@ -142,6 +142,14 @@ const getAvailableTimeSlots = () => {
   return filteredSlots;
 };
 
+const hasFullDayException = (date) => {
+  return exceptions.some(
+    (e) =>
+      format(new Date(e.exception_date), 'yyyy-MM-dd') === format(date, 'yyyy-MM-dd') &&
+      e.start_time === null &&
+      e.end_time === null
+  );
+};
 
   const deleteTimeSlot = async (id) => {
     const { error } = await supabase.from('clinic_schedule').delete().eq('id', id);
@@ -176,59 +184,86 @@ const timeSlots = Array.from({ length: 96 }, (_, i) => {
     const selectedDateStr = format(selectedDate, 'yyyy-MM-dd');
     const selectedWeekday = selectedDate.getDay() === 0 ? 7 : selectedDate.getDay();
 
-    if (isFullDayException(selectedDate)) {
-      setFormError('Η ημέρα έχει ήδη εξαίρεση για όλη την ημέρα.');
-      return;
-    }
 
-    if (!exceptionTime.fullDay) {
-      const { start, end } = exceptionTime;
 
-      if (!start || !end) {
-        setFormError('Συμπληρώστε και τις δύο ώρες.');
-        return;
-      }
+if (!exceptionTime.fullDay) {
+  const { start, end } = exceptionTime;
 
-      if (start >= end) {
-        setFormError('Η ώρα "Από" πρέπει να είναι μικρότερη από την ώρα "Έως".');
-        return;
-      }
+  // Αν υπάρχει ήδη full-day εξαίρεση για τη μέρα → δεν επιτρέπεται άλλη χρονική
+  const fullDayExists = exceptions.some(
+    (e) =>
+      format(new Date(e.exception_date), 'yyyy-MM-dd') === selectedDateStr &&
+      e.start_time === null &&
+      e.end_time === null
+  );
 
-      const daySchedules = weeklySchedule.filter((s) => s.weekday === selectedWeekday);
+  if (fullDayExists) {
+    setFormError('Υπάρχει ήδη εξαίρεση για όλη την ημέρα. Δεν μπορείτε να προσθέσετε άλλη εξαίρεση με ώρες.');
+    return;
+  }
 
-      const inWorkingHours = daySchedules.some((slot) => {
-        const slotStart = slot.start_time?.slice(11, 16);
-        const slotEnd = slot.end_time?.slice(11, 16);
-        return start >= slotStart && end <= slotEnd;
-      });
+  if (!start || !end) {
+    setFormError('Συμπληρώστε και τις δύο ώρες.');
+    return;
+  }
 
-      if (!inWorkingHours) {
-        setFormError('Το χρονικό διάστημα είναι εκτός ωραρίου λειτουργίας του ιατρείου.');
-        return;
-      }
+  if (start >= end) {
+    setFormError('Η ώρα "Από" πρέπει να είναι μικρότερη από την ώρα "Έως".');
+    return;
+  }
 
-      const overlaps = exceptions.some((ex) => {
-        const sameDay = format(new Date(ex.exception_date), 'yyyy-MM-dd') === selectedDateStr;
-        if (!sameDay || ex.start_time === null || ex.end_time === null) return false;
+  // Εύρεση του ωραρίου λειτουργίας για την ημέρα
+  const daySchedules = weeklySchedule.filter((s) => s.weekday === selectedWeekday);
 
-        const exStart = ex.start_time.slice(11, 16);
-        const exEnd = ex.end_time.slice(11, 16);
+  const inWorkingHours = daySchedules.some((slot) => {
+    const slotStart = slot.start_time?.slice(0, 5); // π.χ. "10:00"
+    const slotEnd = slot.end_time?.slice(0, 5);
+    return start >= slotStart && end <= slotEnd;
+  });
 
-        return start < exEnd && end > exStart;
-      });
+  if (!inWorkingHours) {
+    setFormError('Το χρονικό διάστημα είναι εκτός ωραρίου λειτουργίας του ιατρείου.');
+    return;
+  }
 
-      if (overlaps) {
-        setFormError('Το χρονικό διάστημα επικαλύπτεται με υπάρχουσα εξαίρεση.');
-        return;
-      }
-    }
+  // Έλεγχος για επικάλυψη με ήδη υπάρχουσες χρονικές εξαιρέσεις
+const overlaps = exceptions.some((ex) => {
+  const sameDay = format(new Date(ex.exception_date), 'yyyy-MM-dd') === selectedDateStr;
+  if (!sameDay || ex.start_time === null || ex.end_time === null) return false;
 
-    const payload = {
-      exception_date: selectedDateStr,
-      start_time: exceptionTime.fullDay ? null : `1970-01-01T${exceptionTime.start}:00+00:00`,
-      end_time: exceptionTime.fullDay ? null : `1970-01-01T${exceptionTime.end}:00+00:00`,
-      reason: exceptionTime.reason || null,
-    };
+  const exStart = new Date(ex.start_time);
+  const exEnd = new Date(ex.end_time);
+
+  const newStart = new Date(`${selectedDateStr}T${start}:00`);
+  const newEnd = new Date(`${selectedDateStr}T${end}:00`);
+
+  return newStart < exEnd && newEnd > exStart;
+});
+
+
+  if (overlaps) {
+    setFormError('Το χρονικό διάστημα επικαλύπτεται με υπάρχουσα εξαίρεση.');
+    return;
+  }
+}
+
+   
+const tzOffsetMin = new Date().getTimezoneOffset(); // σε λεπτά
+const offsetHours = String(Math.floor(Math.abs(tzOffsetMin) / 60)).padStart(2, '0');
+const offsetMins = String(Math.abs(tzOffsetMin) % 60).padStart(2, '0');
+const sign = tzOffsetMin > 0 ? '-' : '+';
+const tz = `${sign}${offsetHours}:${offsetMins}`;
+// Δημιουργία της πλήρους ημερομηνίας με ώρα
+const datePart = format(selectedDate, 'yyyy-MM-dd'); // π.χ. "2025-08-01"
+const startTz = new Date(`${datePart}T${exceptionTime.start}:00`);
+const endTz = new Date(`${datePart}T${exceptionTime.end}:00`);
+
+const payload = {
+  exception_date: selectedDateStr,
+  start_time: exceptionTime.fullDay ? null : startTz.toISOString(),
+  end_time: exceptionTime.fullDay ? null : endTz.toISOString(),
+  reason: exceptionTime.reason || null,
+};
 
     const { error } = await supabase.from('schedule_exceptions').insert([payload]);
 
@@ -413,7 +448,7 @@ const timeSlots = Array.from({ length: 96 }, (_, i) => {
              
                 className="w-full bg-emerald-600 hover:bg-emerald-700 text-white"
                 onClick={addException}
-                disabled={isFullDay}
+                disabled={isFullDay || !exceptionTime.fullDay && (!exceptionTime.start || !exceptionTime.end) }  
                 >
                 Αποθήκευση Εξαίρεσης
                 </Button>
@@ -438,7 +473,9 @@ const timeSlots = Array.from({ length: 96 }, (_, i) => {
                   <div>
                     <p className="font-medium text-gray-800">
                       {format(new Date(ex.exception_date), 'dd/MM/yyyy')}
-                      {ex.start_time && ex.end_time ? ` (${ex.start_time.slice(0, 5)} - ${ex.end_time.slice(0, 5)})` : ' (όλη η ημέρα)'}
+                    {ex.start_time && ex.end_time
+                    ? ` (${format(new Date(ex.start_time), 'HH:mm')} - ${format(new Date(ex.end_time), 'HH:mm')})`
+                    : ' (όλη η ημέρα)'}
                     </p>
                     {ex.reason && <p className="text-gray-500 text-xs mt-1">{ex.reason}</p>}
                   </div>
