@@ -58,13 +58,14 @@ useEffect(() => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!/^\d{11}$/.test(form.amka)) {
-        setAmkaError(true);
-        setMessage({ type: 'error', text: 'Το πεδίο ΑΜΚΑ πρέπει να περιέχει ακριβώς 11 ψηφία.' });
-        return;
-      } else {
-        setAmkaError(false);
-      }
+   if (form.amka.trim() !== '' && !/^\d{11}$/.test(form.amka)) {
+      setAmkaError(true);
+      setMessage({ type: 'error', text: 'Το πεδίο ΑΜΚΑ πρέπει να περιέχει ακριβώς 11 ψηφία.' });
+      return;
+    } else {
+      setAmkaError(false);
+    }
+
     setLoading(true);
     setMessage(null);
 
@@ -75,11 +76,6 @@ useEffect(() => {
       return;
     }
 
-    const genderMap = {
-      'Άνδρας': 'male',
-      'Γυναίκα': 'female',
-      'Άλλο': 'other',
-    };
     const preparedForm = {
       ...form,
 
@@ -87,7 +83,24 @@ useEffect(() => {
       alcohol: form.alcohol === 'Προσαρμογή' ? form.customAlcohol : form.alcohol,
     };
 
-    const { customSmoking, customAlcohol, ...cleanedForm } = preparedForm;
+  const { customSmoking, customAlcohol, ...cleanedFormRaw } = preparedForm;
+
+  // Χάρτης μετατροπής ελληνικών label φύλου σε αποδεκτές enum τιμές
+  const genderMap = {
+    'Άνδρας': 'male',
+    'Γυναίκα': 'female',
+    'Άλλο': 'other',
+  };
+
+  // Προετοιμασία final form
+  const cleanedForm = {
+    ...cleanedFormRaw,
+    gender: genderMap[cleanedFormRaw.gender] || cleanedFormRaw.gender || null,
+  };
+
+  if (cleanedForm.birth_date === '') cleanedForm.birth_date = null;
+  if (cleanedForm.first_visit_date === '') cleanedForm.first_visit_date = null;
+  if (cleanedForm.amka?.trim() === '') cleanedForm.amka = null;
 
     if (cleanedForm.birth_date === '') cleanedForm.birth_date = null;
     if (cleanedForm.first_visit_date === '') cleanedForm.first_visit_date = null;
@@ -118,12 +131,7 @@ useEffect(() => {
 
             <div className="w-5" /> {/* empty space for alignment */}
             </div>
-  
-        {message && (
-          <div className={`mb-6 text-center text-sm font-medium ${message.type === 'error' ? 'text-red-600' : 'text-green-600'}`}>
-            {message.text}
-          </div>
-        )}
+ 
 
         <form onSubmit={handleSubmit} className="space-y-14">
           <Section title="🧾 Στοιχεία Ασθενούς">
@@ -240,8 +248,13 @@ useEffect(() => {
               <TextAreaField name="notes" label="Σημειώσεις" value={form.notes} onChange={handleChange} />
             </div>
           </Section>
-
+        {message && (
+          <div className={`mb-6 text-center text-sm font-medium ${message.type === 'error' ? 'text-red-600' : 'text-green-600'}`}>
+            {message.text}
+          </div>
+        )}
           <div className="flex justify-end">
+            
             <button
               type="submit"
               disabled={loading}
@@ -249,8 +262,11 @@ useEffect(() => {
             >
               {loading ? 'Αποθήκευση...' : 'Καταχώρηση'}
             </button>
+            
           </div>
+          
         </form>
+        
       </div>
     </main>
   );

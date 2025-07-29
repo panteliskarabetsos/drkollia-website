@@ -114,6 +114,7 @@ const handleDeleteAppointment = async () => {
         status,
         notes,
         duration_minutes, 
+        is_exception,
         patients:patient_id (
           id,
           first_name,
@@ -295,7 +296,17 @@ function calculateAge(birthDateStr) {
             ] || 'bg-gray-100 text-gray-700';
 
               return (
-               <tr key={appt.id} className={i % 2 ? 'bg-white' : 'bg-gray-50'}>
+                
+               <tr
+                      key={appt.id}
+                      className={
+                        appt.is_exception
+                          ? 'bg-orange-100'
+                          : i % 2
+                            ? 'bg-white'
+                            : 'bg-gray-50'
+                      }
+                    >
                           <td className="px-4 py-2">
                             <strong>{appt.patients ? `${appt.patients.first_name} ${appt.patients.last_name}` : '-'}</strong>
 
@@ -331,6 +342,9 @@ function calculateAge(birthDateStr) {
                   {(appt.status === 'approved' && new Date(appt.appointment_time) < new Date())
                     ? 'completed'
                     : appt.status}
+                    {appt.is_exception && (
+                        <span className="ml-2 text-orange-600 text-xs font-semibold">(εξαίρεση)</span>
+                      )}
                 </span>
               </td>
 
@@ -413,6 +427,7 @@ function calculateAge(birthDateStr) {
               </td>
 
                 </tr>
+                
               );
             })}
           </tbody>

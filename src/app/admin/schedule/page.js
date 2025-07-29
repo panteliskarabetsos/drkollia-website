@@ -374,12 +374,13 @@ const payload = {
         </div>
 
         <div className="bg-white p-6 rounded-3xl shadow-xl">
-          <h2 className="text-lg font-semibold mb-4 text-[#444]">Εξαιρέσεις Ημερολογίου</h2>
+          <h2 className="text-lg font-semibold mb-4 text-[#444] text-center">Εξαιρέσεις Ημερολογίου</h2>
 
         <div className="mb-6 flex flex-col items-center">
         <label className="text-sm font-medium mb-2 text-gray-600 text-center">Επιλέξτε Ημερομηνία</label>
         {hasMounted && (
             <Calendar
+            startweekOn={2}
             selected={selectedDate}
             onSelect={setSelectedDate}
             mode="single"
@@ -411,37 +412,37 @@ const payload = {
               <label className="text-sm text-gray-700">Μπλοκάρισμα όλης της ημέρας</label>
             </div>
          {!exceptionTime.fullDay && (
-  <div className="grid grid-cols-2 gap-4">
-    <div>
-      <label className="block text-sm font-medium text-gray-700 mb-1">Από</label>
-      <select
-        disabled={isFullDay}
-        value={exceptionTime.start}
-        onChange={(e) => setExceptionTime((prev) => ({ ...prev, start: e.target.value }))}
-        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
-      >
-        <option value="">-- Από --</option>
-        {getAvailableTimeSlots().map((t) => (
-          <option key={t} value={t}>{t}</option>
-        ))}
-      </select>
-    </div>
-    <div>
-      <label className="block text-sm font-medium text-gray-700 mb-1">Έως</label>
-      <select
-        disabled={isFullDay}
-        value={exceptionTime.end}
-        onChange={(e) => setExceptionTime((prev) => ({ ...prev, end: e.target.value }))}
-        className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
-      >
-        <option value="">-- Έως --</option>
-        {getAvailableTimeSlots().map((t) => (
-          <option key={t} value={t}>{t}</option>
-        ))}
-      </select>
-    </div>
-  </div>
-)}
+            <div className="grid grid-cols-2 gap-4">
+                <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Από</label>
+                <select
+                    disabled={isFullDay}
+                    value={exceptionTime.start}
+                    onChange={(e) => setExceptionTime((prev) => ({ ...prev, start: e.target.value }))}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                >
+                    <option value="">-- Από --</option>
+                    {getAvailableTimeSlots().map((t) => (
+                    <option key={t} value={t}>{t}</option>
+                    ))}
+                </select>
+                </div>
+                <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Έως</label>
+                <select
+                    disabled={isFullDay}
+                    value={exceptionTime.end}
+                    onChange={(e) => setExceptionTime((prev) => ({ ...prev, end: e.target.value }))}
+                    className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                >
+                    <option value="">-- Έως --</option>
+                    {getAvailableTimeSlots().map((t) => (
+                    <option key={t} value={t}>{t}</option>
+                    ))}
+                </select>
+                </div>
+            </div>
+            )}
 
             <div className="flex gap-2">
              <Button

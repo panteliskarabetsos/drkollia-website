@@ -8,7 +8,7 @@ import { format } from 'date-fns';
 import { Calendar } from '@/components/ui/calendar';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Button } from '@/components/ui/button';
-import { UserPlus, Users, ArrowLeft } from 'lucide-react';
+import { UserPlus, Users, ArrowLeft,CalendarX } from 'lucide-react';
 import Link from 'next/link';
 function normalizeGreekText(text) {
   return text
@@ -31,7 +31,10 @@ export default function NewAppointmentPage() {
     email: '',
     amka: ''
   });
-
+  const [hasFullDayException, setHasFullDayException] = useState(false);
+  const [loadingSlots, setLoadingSlots] = useState(false);
+const [nextAvailableDate, setNextAvailableDate] = useState(null);
+const [isSubmitting, setIsSubmitting] = useState(false);
   const [formData, setFormData] = useState({
     appointment_date: null,
     appointment_time: null,
@@ -59,7 +62,7 @@ export default function NewAppointmentPage() {
   useEffect(() => {
   const fetchAvailableSlots = async () => {
     if (!formData.appointment_date) return;
-
+   setLoadingSlots(true);
     const date = formData.appointment_date;
     const weekday = date.getDay(); // 0=Sunday
 
@@ -67,29 +70,45 @@ export default function NewAppointmentPage() {
       .from('clinic_schedule')
       .select('start_time, end_time')
       .eq('weekday', weekday);
-
+   console.log('clinic_schedule:', scheduleData);
+  
     if (!scheduleData || scheduleData.length === 0) {
       setAvailableSlots([]);
       setAllScheduleSlots([]);
+      setHasFullDayException(false); // reset just in case
+      setLoadingSlots(false); 
       return;
     }
+  setHasFullDayException(hasFullDayException); // ενημέρωση state
 
     // Working hours
-    const workingPeriods = scheduleData.map(s => ({
-      start: new Date(`${date.toDateString()} ${s.start_time}`),
-      end: new Date(`${date.toDateString()} ${s.end_time}`)
-    }));
+const workingPeriods = scheduleData.map(s => {
+  const [startHour, startMinute, startSecond] = s.start_time.split(':').map(Number);
+  const [endHour, endMinute, endSecond] = s.end_time.split(':').map(Number);
 
-    // Exceptions
-    const { data: exceptions } = await supabase
-      .from('schedule_exceptions')
-      .select('start_time, end_time')
-      .eq('exception_date', format(date, 'yyyy-MM-dd'));
+  const start = new Date(date);
+  start.setHours(startHour, startMinute, startSecond || 0, 0);
 
-    const exceptionRanges = exceptions?.map(e => ({
-      start: e.start_time ? new Date(e.start_time) : null,
-      end: e.end_time ? new Date(e.end_time) : null
-    })) || [];
+  const end = new Date(date);
+  end.setHours(endHour, endMinute, endSecond || 0, 0);
+
+  return { start, end };
+});
+
+  // Fetch exceptions
+  const { data: exceptions } = await supabase
+    .from('schedule_exceptions')
+    .select('start_time, end_time')
+    .eq('exception_date', format(date, 'yyyy-MM-dd'));
+
+  const exceptionRanges = exceptions?.map(e => ({
+    start: e.start_time ? new Date(e.start_time) : null,
+    end: e.end_time ? new Date(e.end_time) : null
+  })) || [];
+
+  // 🆕 Αν έχει εξαίρεση χωρίς start/end ώρα = όλη μέρα κλειστό
+const fullDayException = exceptions?.some(e => !e.start_time && !e.end_time);
+setHasFullDayException(fullDayException);
 
     // Appointments (booked)
     const startOfDay = new Date(date);
@@ -129,7 +148,7 @@ export default function NewAppointmentPage() {
       while (cursor < end) {
         const endSlot = new Date(cursor);
         endSlot.setMinutes(endSlot.getMinutes() + duration);
-        if (endSlot > end) break;
+       if (endSlot.getTime() > end.getTime()) break;
 
         const timeStr = cursor.toTimeString().slice(0, 5);
 
@@ -154,10 +173,33 @@ export default function NewAppointmentPage() {
 
     setAvailableSlots(slots);
     setAllScheduleSlots(allSlots);
+
+     setLoadingSlots(false);
   };
 
   fetchAvailableSlots();
 }, [formData.appointment_date, formData.duration_minutes, formData.customDuration]);
+
+useEffect(() => {
+  const date = formData.appointment_date;
+  const duration = parseInt(
+    formData.duration_minutes === 'custom'
+      ? formData.customDuration
+      : formData.duration_minutes
+  );
+
+  if (
+    date &&
+    availableSlots.length === 0 &&
+    !hasFullDayException &&
+    allScheduleSlots.length > 0
+  ) {
+    findNextAvailableDate(date, duration);
+  } else {
+    setNextAvailableDate(null);
+  }
+}, [availableSlots, hasFullDayException, formData.appointment_date, formData.duration_minutes, formData.customDuration]);
+
 
   useEffect(() => {
     const fetchPatients = async () => {
@@ -235,82 +277,180 @@ const handleCancel = () => {
 
 const handleSubmit = async (e) => {
   e.preventDefault();
-  let patientId = selectedPatient?.id;
+  setIsSubmitting(true);
 
-  const duration = formData.duration_minutes === 'custom'
-    ? parseInt(formData.customDuration)
-    : parseInt(formData.duration_minutes);
+  try {
+    let patientId = selectedPatient?.id;
 
-  if (isNaN(duration) || duration <= 0) {
-    return alert('Η διάρκεια του ραντεβού δεν είναι έγκυρη.');
-  }
+    const duration = formData.duration_minutes === 'custom'
+      ? parseInt(formData.customDuration)
+      : parseInt(formData.duration_minutes);
 
-  if (newPatientMode) {
-    const trimmedAmka = newPatientData.amka?.trim();
-    if (trimmedAmka) {
-      const { data: existingAmka } = await supabase
+    if (isNaN(duration) || duration <= 0) {
+      alert('Η διάρκεια του ραντεβού δεν είναι έγκυρη.');
+      return;
+    }
+
+    if (newPatientMode) {
+      const trimmedAmka = newPatientData.amka?.trim();
+      if (trimmedAmka) {
+        const { data: existingAmka } = await supabase
+          .from('patients')
+          .select('id')
+          .eq('amka', trimmedAmka)
+          .single();
+
+        if (existingAmka) {
+          alert('Υπάρχει ήδη ασθενής με αυτό το ΑΜΚΑ.');
+          return;
+        }
+      }
+
+      const { data, error: patientError } = await supabase
         .from('patients')
-        .select('id')
-        .eq('amka', trimmedAmka)
-        .single();
+        .insert([{
+          first_name: newPatientData.first_name.trim(),
+          last_name: newPatientData.last_name.trim(),
+          phone: newPatientData.phone?.trim() || null,
+          email: newPatientData.email?.trim() || null,
+          amka: newPatientData.amka?.trim() || null,
+          gender: 'other'
+        }])
+        .select();
 
-      if (existingAmka) {
-        alert('Υπάρχει ήδη ασθενής με αυτό το ΑΜΚΑ.');
+      if (patientError || !data || data.length === 0) {
+        console.error('❌ Patient insert error:', patientError);
+        alert('Σφάλμα κατά την καταχώρηση νέου ασθενή.');
         return;
       }
+
+      patientId = data[0].id;
     }
 
-const { data, error: patientError } = await supabase
-  .from('patients')
-  .insert([{
-    first_name: newPatientData.first_name.trim(),
-    last_name: newPatientData.last_name.trim(),
-    phone: newPatientData.phone?.trim() || null,
-    email: newPatientData.email?.trim() || null,
-    amka: newPatientData.amka?.trim() || null,
-    gender: 'other'  // Αν δεν έχεις επιλογή φύλου ακόμη
-  }])
-  .select();
-
-
-    if (patientError || !data || data.length === 0) {
-      console.error('❌ Patient insert error:', patientError);
-      return alert('Σφάλμα κατά την καταχώρηση νέου ασθενή.');
+    if (!patientId || !formData.appointment_date || !formData.appointment_time) {
+      alert('Πρέπει να συμπληρωθούν όλα τα απαραίτητα πεδία.');
+      return;
     }
 
-    patientId = data[0].id;
-  }
+    const [hour, minute] = formData.appointment_time.split(':').map(Number);
+    const combinedDate = new Date(formData.appointment_date);
+    combinedDate.setHours(hour, minute, 0, 0);
 
-  if (!patientId || !formData.appointment_date || !formData.appointment_time) {
-    return alert('Πρέπει να συμπληρωθούν όλα τα απαραίτητα πεδία.');
-  }
+    const { error } = await supabase.from('appointments').insert([
+      {
+        patient_id: patientId,
+        appointment_time: combinedDate.toISOString(),
+        duration_minutes: duration,
+        notes: formData.notes,
+        reason: formData.reason === 'Προσαρμογή' ? formData.customReason : formData.reason,
+        status: 'approved'
+      }
+    ]);
 
-  const [hour, minute] = formData.appointment_time.split(':').map(Number);
-  const combinedDate = new Date(formData.appointment_date);
-  combinedDate.setHours(hour);
-  combinedDate.setMinutes(minute);
-  combinedDate.setSeconds(0);
-  combinedDate.setMilliseconds(0);
-
-  const { error } = await supabase.from('appointments').insert([
-    {
-      patient_id: patientId,
-      appointment_time: combinedDate.toISOString(),
-      duration_minutes: duration,
-      notes: formData.notes,
-      reason: formData.reason === 'Προσαρμογή' ? formData.customReason : formData.reason,
-      status: 'approved'
+    if (error) {
+      console.error('Appointment insert error:', error);
+      alert('Σφάλμα κατά την καταχώρηση ραντεβού.');
+    } else {
+      router.push('/admin/appointments');
     }
-  ]);
-
-  if (error) {
-    alert('Σφάλμα κατά την καταχώρηση ραντεβού.');
-    console.error('Appointment insert error:', error);
-  } else {
-    router.push('/admin/appointments');
+  } catch (err) {
+    console.error('Σφάλμα:', err);
+    alert('Προέκυψε σφάλμα.');
+  } finally {
+    setIsSubmitting(false);
   }
 };
 
+
+
+const findNextAvailableDate = async (startDate, duration) => {
+  for (let i = 1; i <= 30; i++) {
+    const nextDate = new Date(startDate);
+    nextDate.setDate(startDate.getDate() + i);
+
+    const weekday = nextDate.getDay();
+
+    const { data: scheduleData } = await supabase
+      .from('clinic_schedule')
+      .select('start_time, end_time')
+      .eq('weekday', weekday);
+
+    if (!scheduleData || scheduleData.length === 0) continue;
+
+    const workingPeriods = scheduleData.map((s) => {
+      const [startHour, startMinute] = s.start_time.split(':').map(Number);
+      const [endHour, endMinute] = s.end_time.split(':').map(Number);
+
+      const start = new Date(nextDate);
+      start.setHours(startHour, startMinute, 0, 0);
+      const end = new Date(nextDate);
+      end.setHours(endHour, endMinute, 0, 0);
+
+      return { start, end };
+    });
+
+    const { data: exceptions } = await supabase
+      .from('schedule_exceptions')
+      .select('start_time, end_time')
+      .eq('exception_date', format(nextDate, 'yyyy-MM-dd'));
+
+    const fullDay = exceptions?.some((e) => !e.start_time && !e.end_time);
+    if (fullDay) continue;
+
+    const exceptionRanges = exceptions?.map((e) => ({
+      start: e.start_time ? new Date(e.start_time) : null,
+      end: e.end_time ? new Date(e.end_time) : null,
+    })) || [];
+
+    const startOfDay = new Date(nextDate);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(nextDate);
+    endOfDay.setHours(23, 59, 59, 999);
+
+    const { data: booked } = await supabase
+      .from('appointments')
+      .select('appointment_time, duration_minutes')
+      .gte('appointment_time', startOfDay.toISOString())
+      .lte('appointment_time', endOfDay.toISOString());
+
+    const bookedSlots = [];
+    booked.forEach(({ appointment_time, duration_minutes }) => {
+      const start = new Date(appointment_time);
+      const slotsCount = Math.ceil(duration_minutes / 15);
+      for (let i = 0; i < slotsCount; i++) {
+        const slot = new Date(start);
+        slot.setMinutes(start.getMinutes() + i * 15);
+        bookedSlots.push(slot.toTimeString().slice(0, 5));
+      }
+    });
+
+    for (const { start, end } of workingPeriods) {
+      const cursor = new Date(start);
+      while (cursor < end) {
+        const endSlot = new Date(cursor);
+        endSlot.setMinutes(endSlot.getMinutes() + duration);
+        if (endSlot > end) break;
+
+        const timeStr = cursor.toTimeString().slice(0, 5);
+
+        const overlapsBooked = bookedSlots.includes(timeStr);
+        const overlapsException = exceptionRanges.some((exc) => {
+          if (!exc.start || !exc.end) return true;
+          return cursor >= new Date(exc.start) && cursor < new Date(exc.end);
+        });
+
+        if (!overlapsBooked && !overlapsException) {
+          setNextAvailableDate(nextDate);
+          return;
+        }
+
+        cursor.setMinutes(cursor.getMinutes() + 15);
+      }
+    }
+  }
+
+  setNextAvailableDate(null); // Δεν βρέθηκε διαθέσιμη ημερομηνία
+};
 
 
   return (
@@ -333,11 +473,11 @@ const { data, error: patientError } = await supabase
       </h2>
 
       {/* Κουμπί κάτω από τον τίτλο */}
-      <div className="mt-4 flex justify-center">
+      <div className="mt-6 flex justify-center gap-3 flex-wrap">
         <button
           type="button"
           onClick={() => setNewPatientMode(!newPatientMode)}
-          className="inline-flex items-center gap-2 px-4 py-1.5 border border-[#ccc7bd] text-sm text-[#3b3a36] rounded-full hover:bg-[#f0ede6] transition-all shadow-sm hover:shadow-md"
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-gray-300 bg-white text-gray-700 hover:bg-gray-100 hover:border-gray-400 hover:text-black text-sm font-medium shadow-sm hover:shadow-md transition-all"
         >
           {newPatientMode ? (
             <>
@@ -350,6 +490,15 @@ const { data, error: patientError } = await supabase
               Νέος Ασθενής
             </>
           )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => router.push('/admin/appointments/exception')}
+          className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-gray-300 bg-white text-gray-700 hover:bg-gray-100 hover:border-gray-400 hover:text-black text-sm font-medium shadow-sm hover:shadow-md transition-all"
+        >
+          <CalendarX className="w-4 h-4" />
+          Προσθήκη με Εξαίρεση
         </button>
       </div>
 
@@ -544,70 +693,132 @@ const { data, error: patientError } = await supabase
           </div>
         )}
         {/* Ώρες Διαθεσιμότητας */}
-        {formData.appointment_date && (
-          <div className="mb-5">
-            <label className="block text-sm mb-1 text-gray-600">Επιλογή Ώρας</label>
-            <div className="grid grid-cols-4 gap-2">
-              {allScheduleSlots.map(({ time, available }) => {
-                const [hour, minute] = time.split(':').map(Number);
-                const start = new Date();
-                start.setHours(hour, minute, 0, 0);
+{/* Ώρες Διαθεσιμότητας */}
+{formData.appointment_date && (
+  <div className="mb-5">
+    <label className="block text-sm mb-1 text-gray-600">Επιλογή Ώρας</label>
 
-                const duration = parseInt(
-                  formData.duration_minutes === 'custom'
-                    ? formData.customDuration
-                    : formData.duration_minutes
-                );
-
-                const end = new Date(start);
-                end.setMinutes(end.getMinutes() + duration);
-
-                const endTimeStr = `${String(end.getHours()).padStart(2, '0')}:${String(end.getMinutes()).padStart(2, '0')}`;
-
-                return (
-                  <button
-                    key={time}
-                    type="button"
-                    onClick={() => {
-                      if (available) setFormData({ ...formData, appointment_time: time });
-                    }}
-                    disabled={!available}
-                    className={`px-3 py-2 text-sm rounded-lg border transition-all ${
-                      formData.appointment_time === time && available
-                        ? 'bg-gray-800 text-white'
-                        : available
-                        ? 'bg-white text-gray-800 border-gray-300 hover:bg-gray-100'
-                        : 'bg-gray-200 text-gray-400 border-gray-300 cursor-not-allowed'
-                    }`}
-                    title={available ? '' : 'Κλεισμένο ή μη διαθέσιμο'}
-                  >
-                    {time}–{endTimeStr}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-
-
-        {/* Σημειώσεις */}
-        <div className="mb-6">
-          <label className="block text-sm mb-1 text-gray-600">Σημειώσεις</label>
-          <textarea
-            rows="3"
-            value={formData.notes}
-            onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
-            className="w-full p-2 border border-gray-300 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-gray-500"
-          />
-        </div>
-
-        <button
-          type="submit"
-          className="w-full bg-gray-800 text-white py-2 rounded-lg hover:bg-gray-700 transition"
+    {loadingSlots ? (
+      <div className="flex items-center justify-center py-4">
+        <svg
+          className="animate-spin h-5 w-5 text-gray-600"
+          xmlns="http://www.w3.org/2000/svg"
+          fill="none"
+          viewBox="0 0 24 24"
         >
-          Καταχώρηση Ραντεβού
-        </button>
+          <circle
+            className="opacity-25"
+            cx="12"
+            cy="12"
+            r="10"
+            stroke="currentColor"
+            strokeWidth="4"
+          />
+          <path
+            className="opacity-75"
+            fill="currentColor"
+            d="M4 12a8 8 0 018-8v8H4z"
+          />
+        </svg>
+        <span className="ml-2 text-gray-600 text-sm">Φόρτωση διαθέσιμων ωρών...</span>
+      </div>
+    ) : hasFullDayException ? (
+      <p className="text-red-600 text-sm mt-2">
+        Το ιατρείο είναι κλειστό για όλη την ημέρα λόγω εξαίρεσης.
+      </p>
+    ) : allScheduleSlots.length === 0 ? (
+      <p className="text-red-600 text-sm mt-2">
+        Εκτός ωραρίου Ιατρείου για την επιλεγμένη ημέρα.
+      </p>
+    ) : availableSlots.length === 0 ? (
+      <p className="text-red-600 text-sm mt-2">
+        Δεν υπάρχει διαθέσιμο ραντεβού για τη διάρκεια που επιλέξατε.
+        {nextAvailableDate ? (
+          <> Πρώτο διαθέσιμο: <strong>{format(nextAvailableDate, 'dd/MM/yyyy')}</strong></>
+        ) : (
+          <> Δοκιμάστε άλλη ημερομηνία.</>
+        )}
+      </p>
+    ) : (
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+        {allScheduleSlots.map(({ time, available }) => {
+          const [hour, minute] = time.split(':').map(Number);
+          const start = new Date();
+          start.setHours(hour, minute, 0, 0);
+
+          const duration = parseInt(
+            formData.duration_minutes === 'custom'
+              ? formData.customDuration
+              : formData.duration_minutes
+          );
+
+          const end = new Date(start);
+          end.setMinutes(end.getMinutes() + duration);
+
+          const endTimeStr = `${String(end.getHours()).padStart(2, '0')}:${String(end.getMinutes()).padStart(2, '0')}`;
+
+          return (
+            <button
+              key={time}
+              type="button"
+              onClick={() => {
+                if (available) setFormData({ ...formData, appointment_time: time });
+              }}
+              disabled={!available}
+              className={`px-3 py-2 text-sm rounded-lg border transition-all ${
+                formData.appointment_time === time && available
+                  ? 'bg-gray-800 text-white'
+                  : available
+                  ? 'bg-white text-gray-800 border-gray-300 hover:bg-gray-100'
+                  : 'bg-gray-200 text-gray-400 border-gray-300 cursor-not-allowed'
+              }`}
+              title={available ? '' : 'Κλεισμένο ή μη διαθέσιμο'}
+            >
+              {time}–{endTimeStr}
+            </button>
+          );
+        })}
+      </div>
+    )}
+  </div>
+)}
+
+{/* Σημειώσεις */}
+<div className="mb-6">
+  <label className="block text-sm mb-1 text-gray-600">Σημειώσεις</label>
+  <textarea
+    rows="3"
+    value={formData.notes}
+    onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
+    className="w-full p-2 border border-gray-300 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-gray-500"
+  />
+</div>
+
+  <button
+    type="submit"
+    disabled={isSubmitting}
+    className={`w-full flex items-center justify-center bg-gray-800 text-white py-2 rounded-lg transition ${
+      isSubmitting ? 'opacity-60 cursor-not-allowed' : 'hover:bg-gray-700'
+    }`}
+  >
+    {isSubmitting ? (
+      <>
+        <svg
+          className="animate-spin h-5 w-5 mr-2 text-white"
+          xmlns="http://www.w3.org/2000/svg"
+          fill="none"
+          viewBox="0 0 24 24"
+        >
+          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+        </svg>
+        Καταχώρηση...
+      </>
+    ) : (
+      'Καταχώρηση Ραντεβού'
+    )}
+  </button>
+
       </form>
     </main>
   );
@@ -647,3 +858,4 @@ function generateAvailableSlots(startHour, endHour, duration, booked) {
   }
   return slots;
 }
+
