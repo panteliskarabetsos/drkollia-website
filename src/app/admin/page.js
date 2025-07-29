@@ -99,7 +99,7 @@ export default function AdminPage() {
                   setLoadingButton(idx);
                   router.push(item.href);
                 }}
-                className="inline-flex items-center justify-center gap-2 text-sm px-4 py-2 rounded-md bg-[#3a3a38] text-white hover:bg-[#242422] transition font-medium shadow disabled:opacity-60"
+                className="inline-flex items-center justify-center gap-2 text-sm px-4 py-2 rounded-md border border-gray-300 text-gray-700 hover:bg-[#3a3a38] hover:text-white transition font-medium shadow-sm disabled:opacity-60"
                 disabled={loadingButton !== null}
               >
                 {loadingButton === idx ? (
@@ -114,6 +114,7 @@ export default function AdminPage() {
                   </>
                 )}
               </button>
+
             </div>
           ))}
         </div>
