@@ -8,8 +8,11 @@ import { format } from 'date-fns';
 import { Calendar } from '@/components/ui/calendar';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Button } from '@/components/ui/button';
-import { UserPlus, Users, ArrowLeft,CalendarX } from 'lucide-react';
+import { UserPlus, Users, ArrowLeft,CalendarX,AlertTriangle } from 'lucide-react';
 import Link from 'next/link';
+import { startOfMonth, endOfMonth } from 'date-fns';
+import { el } from 'date-fns/locale';
+
 function normalizeGreekText(text) {
   return text
     .normalize('NFD') // αποσυνθέτει τα τονισμένα γράμματα (π.χ. ή → ι + ́)
@@ -58,6 +61,15 @@ const [isSubmitting, setIsSubmitting] = useState(false);
   });
   const [availableSlots, setAvailableSlots] = useState([]);
   const [allScheduleSlots, setAllScheduleSlots] = useState([]);
+  const [visitorCount, setVisitorCount] = useState(null);
+  const [showVisitorMessage, setShowVisitorMessage] = useState(false);
+const greekLocale = {
+  ...el,
+  options: {
+    ...el.options,
+    weekStartsOn: 1, // Ξεκινά η εβδομάδα από Δευτέρα
+  },
+};
 
   useEffect(() => {
   const fetchAvailableSlots = async () => {
@@ -106,9 +118,9 @@ const workingPeriods = scheduleData.map(s => {
     end: e.end_time ? new Date(e.end_time) : null
   })) || [];
 
-  // 🆕 Αν έχει εξαίρεση χωρίς start/end ώρα = όλη μέρα κλειστό
-const fullDayException = exceptions?.some(e => !e.start_time && !e.end_time);
-setHasFullDayException(fullDayException);
+  // Αν έχει εξαίρεση χωρίς start/end ώρα = όλη μέρα κλειστό
+  const fullDayException = exceptions?.some(e => !e.start_time && !e.end_time);
+  setHasFullDayException(fullDayException);
 
     // Appointments (booked)
     const startOfDay = new Date(date);
@@ -280,16 +292,51 @@ const handleSubmit = async (e) => {
   setIsSubmitting(true);
 
   try {
-    let patientId = selectedPatient?.id;
+  const duration = formData.duration_minutes === 'custom'
+    ? parseInt(formData.customDuration || '', 10)
+    : parseInt(formData.duration_minutes, 10);
 
-    const duration = formData.duration_minutes === 'custom'
-      ? parseInt(formData.customDuration)
-      : parseInt(formData.duration_minutes);
 
     if (isNaN(duration) || duration <= 0) {
       alert('Η διάρκεια του ραντεβού δεν είναι έγκυρη.');
       return;
     }
+    const [hour, minute] = formData.appointment_time.split(':').map(Number);
+    const combinedDate = new Date(formData.appointment_date);
+    combinedDate.setHours(hour, minute, 0, 0);
+
+    // === Ειδικός έλεγχος για Ιατρικό Επισκέπτη ===
+    if (formData.reason === 'Ιατρικός Επισκέπτης') {
+
+
+      if (!formData.appointment_date || !formData.appointment_time || !searchTerm.trim()) {
+        alert('Πρέπει να συμπληρωθούν όλα τα απαραίτητα πεδία (Ημερομηνία, Ώρα, Όνομα Επισκέπτη).');
+        return;
+      }
+
+      const { error } = await supabase.from('appointments').insert([
+        {
+          patient_id: null,
+          appointment_time: combinedDate.toISOString(),
+          duration_minutes: duration,
+         reason: 'Ιατρικός Επισκέπτης',
+          notes: `Εταιρεία: ${searchTerm.trim()}\n${formData.notes || ''}`.trim(),
+          status: 'approved'
+        }
+      ]);
+
+      if (error) {
+        console.error('Appointment insert error:', error);
+        alert('Σφάλμα κατά την καταχώρηση ραντεβού.');
+      } else {
+        router.push('/admin/appointments');
+      }
+
+      return; // τερματισμός εδώ
+    }
+
+    // === Δημιουργία νέου ασθενούς αν χρειάζεται ===
+    let patientId = selectedPatient?.id;
 
     if (newPatientMode) {
       const trimmedAmka = newPatientData.amka?.trim();
@@ -327,14 +374,13 @@ const handleSubmit = async (e) => {
       patientId = data[0].id;
     }
 
+    // === Έλεγχος πεδίων ===
     if (!patientId || !formData.appointment_date || !formData.appointment_time) {
       alert('Πρέπει να συμπληρωθούν όλα τα απαραίτητα πεδία.');
       return;
     }
 
-    const [hour, minute] = formData.appointment_time.split(':').map(Number);
-    const combinedDate = new Date(formData.appointment_date);
-    combinedDate.setHours(hour, minute, 0, 0);
+
 
     const { error } = await supabase.from('appointments').insert([
       {
@@ -361,6 +407,39 @@ const handleSubmit = async (e) => {
   }
 };
 
+useEffect(() => {
+  const checkVisitors = async () => {
+    if (
+      formData.reason !== 'Ιατρικός Επισκέπτης' ||
+      !formData.appointment_date
+    ) {
+      setVisitorCount(0);
+      setShowVisitorMessage(false);
+      return;
+    }
+
+    const date = new Date(formData.appointment_date);
+    const start = startOfMonth(date).toISOString();
+    const end = endOfMonth(date).toISOString();
+
+    const { count, error } = await supabase
+      .from('appointments')
+      .select('*', { count: 'exact', head: true })
+      .gte('appointment_time', start)
+      .lte('appointment_time', end)
+      .eq('reason', 'Ιατρικός Επισκέπτης');
+
+    if (error) {
+      console.error('❌ Visitor count error:', error);
+      return;
+    }
+
+    setVisitorCount(count || 0);
+    setShowVisitorMessage((count || 0) > 0);
+  };
+
+  checkVisitors();
+}, [formData.appointment_date, formData.reason]);
 
 
 const findNextAvailableDate = async (startDate, duration) => {
@@ -452,9 +531,8 @@ const findNextAvailableDate = async (startDate, duration) => {
   setNextAvailableDate(null); // Δεν βρέθηκε διαθέσιμη ημερομηνία
 };
 
-
   return (
-    <main className="min-h-screen flex items-center justify-center bg-[#f9f9f9] px-14 py-12 ">
+    <main className="min-h-screen flex items-center justify-center bg-[#f9f9f9] px-14 py-22 ">
      <form onSubmit={handleSubmit} className="bg-white w-full max-w-2xl p-8 md:p-10 rounded-3xl shadow-lg border border-[#e4dfd4] transition-shadow hover:shadow-xl">
     <div className="relative mb-8">
       {/* Back Button */}
@@ -503,89 +581,105 @@ const findNextAvailableDate = async (startDate, duration) => {
       </div>
 
         </div>
-        {newPatientMode ? (
-          <div className="mb-6 grid grid-cols-1 gap-3">
-           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <input
-              type="text"
-              placeholder="Όνομα"
-              value={newPatientData.first_name}
-              onChange={(e) => setNewPatientData({ ...newPatientData, first_name: e.target.value })}
-              className="p-2 border border-gray-300 rounded-lg"
-              required
-            />
-            <input
-              type="text"
-              placeholder="Επώνυμο"
-              value={newPatientData.last_name}
-              onChange={(e) => setNewPatientData({ ...newPatientData, last_name: e.target.value })}
-              className="p-2 border border-gray-300 rounded-lg"
-              required
-            />
-          </div>
-            <input
-              type="text"
-              placeholder="Τηλέφωνο"
-              value={newPatientData.phone}
-              onChange={(e) => setNewPatientData({ ...newPatientData, phone: e.target.value })}
-              className="p-2 border border-gray-300 rounded-lg"
-            />
-            <input
-              type="email"
-              placeholder="Email"
-              value={newPatientData.email}
-              onChange={(e) => setNewPatientData({ ...newPatientData, email: e.target.value })}
-              className="p-2 border border-gray-300 rounded-lg"
-            />
-            <input
-              type="text"
-              placeholder="ΑΜΚΑ"
-              value={newPatientData.amka}
-              onChange={(e) => setNewPatientData({ ...newPatientData, amka: e.target.value })}
-              className="p-2 border border-gray-300 rounded-lg"
-            />
-          </div>
-        ) : (
-          <div className="mb-5">
-            <label className="block text-sm mb-1 text-gray-600">Αναζήτηση Ασθενή</label>
-            <input
-              type="text"
-              placeholder="Πληκτρολογήστε ονοματεπώνημο, ΑΜΚΑ ή τηλέφωνο ασθενούς..."
-              value={searchTerm}
-              onChange={(e) => {
-                setSearchTerm(e.target.value);
-                setSelectedPatient(null);
+     {formData.reason === 'Ιατρικός Επισκέπτης' ? (
+  <div className="mb-5">
+    <label className="block text-sm mb-1 text-gray-600">Όνομα Επισκέπτη</label>
+    <input
+      type="text"
+      placeholder="π.χ. Αντιπρόσωπος εταιρείας Χ"
+      value={searchTerm}
+      onChange={(e) => setSearchTerm(e.target.value)}
+      className="px-4 py-2 border border-[#d6d3cb] rounded-md text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#b5aa96] transition w-full"
+      required
+    />
+  </div>
+) : newPatientMode ? (
+  <div className="mb-6 grid grid-cols-1 gap-3">
+    {/* πεδία νέου ασθενή */}
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      <input
+        type="text"
+        placeholder="Όνομα"
+        value={newPatientData.first_name}
+        onChange={(e) => setNewPatientData({ ...newPatientData, first_name: e.target.value })}
+        className="p-2 border border-gray-300 rounded-lg"
+        required
+      />
+      <input
+        type="text"
+        placeholder="Επώνυμο"
+        value={newPatientData.last_name}
+        onChange={(e) => setNewPatientData({ ...newPatientData, last_name: e.target.value })}
+        className="p-2 border border-gray-300 rounded-lg"
+        required
+      />
+    </div>
+    {/* υπόλοιπα πεδία */}
+    <input
+      type="text"
+      placeholder="Τηλέφωνο"
+      value={newPatientData.phone}
+      onChange={(e) => setNewPatientData({ ...newPatientData, phone: e.target.value })}
+      className="p-2 border border-gray-300 rounded-lg"
+    />
+    <input
+      type="email"
+      placeholder="Email"
+      value={newPatientData.email}
+      onChange={(e) => setNewPatientData({ ...newPatientData, email: e.target.value })}
+      className="p-2 border border-gray-300 rounded-lg"
+    />
+    <input
+      type="text"
+      placeholder="ΑΜΚΑ"
+      value={newPatientData.amka}
+      onChange={(e) => setNewPatientData({ ...newPatientData, amka: e.target.value })}
+      className="p-2 border border-gray-300 rounded-lg"
+    />
+  </div>
+) : (
+  <div className="mb-5">
+    <label className="block text-sm mb-1 text-gray-600">Αναζήτηση Ασθενή</label>
+    {/* input αναζήτησης και λίστα */}
+    <input
+      type="text"
+      placeholder="Πληκτρολογήστε ονοματεπώνυμο, ΑΜΚΑ ή τηλέφωνο ασθενούς..."
+      value={searchTerm}
+      onChange={(e) => {
+        setSearchTerm(e.target.value);
+        setSelectedPatient(null);
+      }}
+      className="px-4 py-2 border border-[#d6d3cb] rounded-md text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#b5aa96] transition w-full"
+    />
+    {searchTerm && !selectedPatient && (
+      <ul className="mt-2 border rounded-lg max-h-40 overflow-y-auto text-sm bg-white">
+        {filteredPatients.length > 0 ? (
+          filteredPatients.map((patient) => (
+            <li
+              key={patient.id}
+              onClick={() => {
+                setSelectedPatient(patient);
+                setSearchTerm(`${patient.first_name} ${patient.last_name}`);
               }}
-              className="px-4 py-2 border border-[#d6d3cb] rounded-md text-sm bg-white focus:outline-none focus:ring-2 focus:ring-[#b5aa96] transition w-full"
-            />
-            {searchTerm && !selectedPatient && (
-              <ul className="mt-2 border rounded-lg max-h-40 overflow-y-auto text-sm bg-white">
-                {filteredPatients.length > 0 ? (
-                  filteredPatients.map((patient) => (
-                    <li
-                      key={patient.id}
-                      onClick={() => {
-                        setSelectedPatient(patient);
-                        setSearchTerm(`${patient.first_name} ${patient.last_name}`);
-                      }}
-                      className="px-4 py-2 cursor-pointer hover:bg-gray-100"
-                    >
-                     {patient.first_name} {patient.last_name} ({patient.email})<br />
-                      <span className="text-xs text-gray-500">ΑΜΚΑ: {patient.amka} | Τηλ: {patient.phone}</span>
-                    </li>
-                  ))
-                ) : (
-                  <li className="px-4 py-2 text-gray-400">Δεν βρέθηκε ασθενής</li>
-                )}
-              </ul>
-            )}
-            {selectedPatient && (
-              <p className="mt-2 text-sm text-green-600">
-                Επιλέχθηκε: <strong>{`${selectedPatient.first_name} ${selectedPatient.last_name}`}</strong>
-              </p>
-            )}
-          </div>
+              className="px-4 py-2 cursor-pointer hover:bg-gray-100"
+            >
+              {patient.first_name} {patient.last_name} ({patient.email})<br />
+              <span className="text-xs text-gray-500">ΑΜΚΑ: {patient.amka} | Τηλ: {patient.phone}</span>
+            </li>
+          ))
+        ) : (
+          <li className="px-4 py-2 text-gray-400">Δεν βρέθηκε ασθενής</li>
         )}
+      </ul>
+    )}
+    {selectedPatient && (
+      <p className="mt-2 text-sm text-green-600">
+        Επιλέχθηκε: <strong>{`${selectedPatient.first_name} ${selectedPatient.last_name}`}</strong>
+      </p>
+    )}
+  </div>
+)}
+
 
 
    {/* Λόγος Επίσκεψης */}
@@ -632,6 +726,7 @@ const findNextAvailableDate = async (startDate, duration) => {
       </div>
     )}
 
+
         {/* Επιλογή Ημερομηνίας */}
         <div className="mb-5">
           <label className="block text-sm mb-1 text-gray-600">Ημερομηνία</label>
@@ -645,12 +740,19 @@ const findNextAvailableDate = async (startDate, duration) => {
             <PopoverContent className="w-auto p-0">
               <Calendar
                 mode="single"
+                locale={greekLocale}
                 selected={formData.appointment_date}
                 onSelect={(date) => {
                   setFormData({ ...formData, appointment_date: date, appointment_time: null });
             
                 }}
                 disabled={{ before: new Date() }}
+                  modifiers={{
+                  weekend: (date) => [0, 6].includes(date.getDay()), // Κυριακή = 0, Σάββατο = 6
+                }}
+                modifiersClassNames={{
+                  weekend: 'text-gray-400 opacity-60', // πιο "faded"
+                }}
                 showOutsideDays
                 initialFocus
               />
@@ -818,6 +920,19 @@ const findNextAvailableDate = async (startDate, duration) => {
       'Καταχώρηση Ραντεβού'
     )}
   </button>
+{formData.reason === 'Ιατρικός Επισκέπτης' && showVisitorMessage && visitorCount > 0 && (
+  <div className="flex items-start gap-3 p-4 mt-4 border border-yellow-300 bg-yellow-50 rounded-xl shadow-sm">
+    <AlertTriangle className="w-5 h-5 text-yellow-600 mt-1" />
+    <div className="text-sm text-yellow-800 leading-snug">
+      <p className="font-semibold">Προειδοποίηση:</p>
+      <p>
+        {visitorCount === 1
+          ? 'Έχει ήδη προγραμματιστεί 1 Ιατρικός Επισκέπτης για τον συγκεκριμένο μήνα.'
+          : `Έχουν ήδη προγραμματιστεί ${visitorCount} Ιατρικοί Επισκέπτες για τον συγκεκριμένο μήνα.`}
+      </p>
+    </div>
+  </div>
+)}
 
       </form>
     </main>
